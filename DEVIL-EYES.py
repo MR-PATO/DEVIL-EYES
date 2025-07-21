@@ -6,6 +6,25 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog, simpledialog
 import ipaddress
 
+def obtener_ip_local():
+    # Busca IPs en interfaces y retorna la primera privada válida
+    interfaces = netifaces.interfaces()
+    for interfaz in interfaces:
+        if netifaces.AF_INET in netifaces.ifaddresses(interfaz):
+            ip_info = netifaces.ifaddresses(interfaz)[netifaces.AF_INET][0]
+            ip = ip_info["addr"]
+            if ip.startswith(("192.168.", "10.", "172.")):
+                return ip
+    return None
+
+def ip_a_subred(ip_local):
+    # Para /24 toma los primeros 3 octetos y pone .0/24
+    partes = ip_local.split(".")
+    if len(partes) == 4:
+        return f"{partes[0]}.{partes[1]}.{partes[2]}.0/24"
+    else:
+        return None
+
 def obtener_nombre(ip):
     try:
         return socket.gethostbyaddr(ip)[0]
@@ -200,60 +219,14 @@ def escanear_puertos(ip, nombre, mostrar_en_ventana=True):
         for puerto in sorted(resultados):
             print(f"Puerto {puerto} ABIERTO")
 
-def ventana_seleccion_red():
-    ventana = tk.Tk()
-    ventana.title("Seleccionar red a escanear")
-    ventana.geometry("400x200")
-    ventana.configure(bg="#1e1e1e")
-
-    var = tk.StringVar(value="192.168.0.0/24")
-
-    def confirmar():
-        ventana.destroy()
-
-    tk.Label(ventana, text="Selecciona una opción o ingresa la red manualmente:", 
-             fg="#00ffcc", bg="#1e1e1e", font=("Consolas", 12)).pack(pady=10)
-
-    rb1 = tk.Radiobutton(ventana, text="Usar red por defecto 192.168.0.0/24", variable=var, value="192.168.0.0/24",
-                         fg="white", bg="#1e1e1e", selectcolor="#007acc", font=("Consolas", 11))
-    rb1.pack(anchor="w", padx=20, pady=5)
-
-    rb2 = tk.Radiobutton(ventana, text="Ingresar red manualmente", variable=var, value="manual",
-                         fg="white", bg="#1e1e1e", selectcolor="#007acc", font=("Consolas", 11))
-    rb2.pack(anchor="w", padx=20, pady=5)
-
-    entry_red = tk.Entry(ventana, font=("Consolas", 11), bg="#2e2e2e", fg="white")
-    entry_red.pack(pady=10, padx=20, fill="x")
-
-    def on_radio_change(*args):
-        if var.get() == "manual":
-            entry_red.config(state="normal")
-        else:
-            entry_red.delete(0, tk.END)
-            entry_red.config(state="disabled")
-
-    var.trace_add("write", on_radio_change)
-
-    tk.Button(ventana, text="Confirmar", command=confirmar, bg="#007acc", fg="white", font=("Consolas", 11, "bold")).pack(pady=10)
-
-    ventana.mainloop()
-
-    red = var.get()
-    if red == "manual":
-        red_manual = entry_red.get()
-        # Validar formato red CIDR
-        try:
-            ipaddress.IPv4Network(red_manual, strict=False)
-            return red_manual
-        except Exception:
-            messagebox.showerror("Error", "Red inválida. Usando red por defecto 192.168.0.0/24")
-            return "192.168.0.0/24"
-    else:
-        return red
-
 def ventana_menu():
+    ip_local = obtener_ip_local()
+    if not ip_local:
+        messagebox.showerror("Error", "No se pudo determinar la IP local. Asegúrate de estar conectado a una red.")
+        return
+    subred = ip_a_subred(ip_local)
+
     dispositivos = []
-    subred = ventana_seleccion_red()
 
     root = tk.Tk()
     root.title("MR.Pato Scanner v1.5")
@@ -264,7 +237,7 @@ def ventana_menu():
                       fg="#00ffcc", bg="#1e1e1e")
     titulo.pack(pady=20)
 
-    info_subred = tk.Label(root, text=f"Red a escanear: {subred}", font=("Consolas", 12),
+    info_subred = tk.Label(root, text=f"Red detectada: {subred}", font=("Consolas", 12),
                            fg="white", bg="#1e1e1e")
     info_subred.pack(pady=5)
 
@@ -293,7 +266,7 @@ def ventana_menu():
     def salir():
         root.destroy()
 
-    btn1 = tk.Button(root, text="1. Escanear dispositivos en la red", font=("Consolas", 12),
+    btn1 = tk.Button(root, text="1. Escanear dispositivos en la red detectada", font=("Consolas", 12),
                      bg="#007acc", fg="white", command=boton_escaneo_red)
     btn1.pack(pady=10, fill="x", padx=50)
 
