@@ -1,19 +1,17 @@
 import scapy.all as scapy
 import socket
-import os
 import netifaces
 import threading
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog, simpledialog
+import ipaddress
 
-# Colores para terminal (solo si quieres imprimir en consola)
+# Colores terminal (solo para referencia)
 AZUL = "\033[34m"
 ROJO = "\033[31m"
 VERDE = "\033[32m"
 NARANJA = "\033[33m"
 RESET = "\033[0m"
-
-# Funciones básicas
 
 def obtener_ip_local():
     interfaces = netifaces.interfaces()
@@ -23,6 +21,18 @@ def obtener_ip_local():
             ip = ip_info["addr"]
             if ip.startswith(("192.168.", "10.", "172.")):
                 return ip
+    return None
+
+def obtener_subred_local():
+    interfaces = netifaces.interfaces()
+    for interfaz in interfaces:
+        if netifaces.AF_INET in netifaces.ifaddresses(interfaz):
+            ip_info = netifaces.ifaddresses(interfaz)[netifaces.AF_INET][0]
+            ip = ip_info["addr"]
+            netmask = ip_info.get("netmask", None)
+            if ip.startswith(("192.168.", "10.", "172.")) and netmask:
+                red = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+                return str(red)
     return None
 
 def obtener_nombre(ip):
@@ -44,10 +54,9 @@ def detectar_sistema(nombre):
     else:
         return "Desconocido"
 
-# Escaneo de red con scapy
-
-def escanear_red(ip):
-    request = scapy.ARP(pdst=f"{ip}/24")
+def escanear_red(subred):
+    print(f"\n[+] Escaneando dispositivos en la red {subred}...\n")
+    request = scapy.ARP(pdst=subred)
     broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
     respuesta = scapy.srp(broadcast / request, timeout=2, verbose=False)[0]
 
@@ -64,8 +73,6 @@ def escanear_red(ip):
         })
 
     return dispositivos
-
-# Mostrar resultados en tabla con ventana gráfica
 
 def mostrar_resultados_en_tabla(dispositivos):
     ventana = tk.Toplevel()
@@ -124,15 +131,13 @@ def mostrar_resultados_en_tabla(dispositivos):
 
     ventana.mainloop()
 
-# Escaneo de puertos con ventana y hilos
-
 def obtener_velocidad_gui():
     ventana = tk.Tk()
     ventana.title("Seleccionar velocidad de escaneo")
     ventana.geometry("300x180")
     ventana.configure(bg="#1e1e1e")
 
-    var = tk.StringVar(value="2")
+    var = tk.StringVar(value="0.5")
 
     opciones = {
         "1 - Lento (2 seg)": 2,
@@ -221,16 +226,18 @@ def escanear_puertos(ip, nombre, mostrar_en_ventana=True):
         ventana.mainloop()
 
     else:
-        # Solo mostrar en consola (opcional)
         for puerto in sorted(resultados):
             print(f"{VERDE}Puerto {puerto} ABIERTO{RESET}")
-
-# Ventana principal - menú
 
 def ventana_menu():
     ip_local = obtener_ip_local()
     if not ip_local:
         messagebox.showerror("Error", "No se pudo determinar la IP local. Asegúrate de estar conectado a una red.")
+        return
+
+    subred = obtener_subred_local()
+    if not subred:
+        messagebox.showerror("Error", "No se pudo determinar la subred local.")
         return
 
     dispositivos = []
@@ -248,9 +255,13 @@ def ventana_menu():
                        fg="white", bg="#1e1e1e")
     info_ip.pack(pady=5)
 
+    info_subred = tk.Label(root, text=f"Subred local detectada: {subred}", font=("Consolas", 12),
+                       fg="white", bg="#1e1e1e")
+    info_subred.pack(pady=5)
+
     def boton_escaneo_red():
         nonlocal dispositivos
-        dispositivos = escanear_red(".".join(ip_local.split(".")[:-1]))
+        dispositivos = escanear_red(subred)
         if dispositivos:
             mostrar_resultados_en_tabla(dispositivos)
         else:
