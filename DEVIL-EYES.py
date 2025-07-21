@@ -1,288 +1,162 @@
-import scapy.all as scapy
+#!/usr/bin/env python3
+import os
+import time
 import socket
-import netifaces
 import threading
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, filedialog, simpledialog
-import ipaddress
+from scapy.all import ARP, Ether, srp
+import netifaces as ni
 
-def obtener_ip_local():
-    # Busca IPs en interfaces y retorna la primera privada válida
-    interfaces = netifaces.interfaces()
-    for interfaz in interfaces:
-        if netifaces.AF_INET in netifaces.ifaddresses(interfaz):
-            ip_info = netifaces.ifaddresses(interfaz)[netifaces.AF_INET][0]
-            ip = ip_info["addr"]
-            if ip.startswith(("192.168.", "10.", "172.")):
-                return ip
-    return None
+# Colores ANSI
+R = "\033[31m"  # Rojo
+G = "\033[32m"  # Verde
+Y = "\033[33m"  # Amarillo
+B = "\033[34m"  # Azul
+C = "\033[36m"  # Cian
+W = "\033[0m"   # Blanco/Reset
 
-def ip_a_subred(ip_local):
-    # Para /24 toma los primeros 3 octetos y pone .0/24
-    partes = ip_local.split(".")
-    if len(partes) == 4:
-        return f"{partes[0]}.{partes[1]}.{partes[2]}.0/24"
-    else:
-        return None
-
-def obtener_nombre(ip):
+# Función para obtener la red local automáticamente
+def obtener_red_local():
     try:
-        return socket.gethostbyaddr(ip)[0]
-    except socket.herror:
-        return "Desconocido"
+        interfaz = ni.gateways()['default'][ni.AF_INET][1]
+        ip = ni.ifaddresses(interfaz)[ni.AF_INET][0]['addr']
+        mascara = ni.ifaddresses(interfaz)[ni.AF_INET][0]['netmask']
+        bits = sum([bin(int(x)).count('1') for x in mascara.split('.')])
+        return f"{ip}/{bits}"
+    except:
+        return input(f"{Y}No se detectó red automáticamente. Ingresa la red a escanear (ej. 192.168.1.0/24): {W}")
 
-def detectar_sistema(nombre):
-    nombre_lower = nombre.lower()
-    if "android" in nombre_lower:
-        return "Android"
-    elif "win" in nombre_lower or "windows" in nombre_lower:
+# Función para escanear dispositivos conectados
+def escanear_dispositivos(red):
+    print(f"\n{C}[+] Escaneando red {red}...{W}")
+    paquetes = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=red)
+    resultado = srp(paquetes, timeout=2, verbose=0)[0]
+
+    dispositivos = []
+    for envio, respuesta in resultado:
+        ip = respuesta.psrc
+        mac = respuesta.hwsrc
+        try:
+            nombre = socket.gethostbyaddr(ip)[0]
+        except:
+            nombre = "Desconocido"
+        sistema = detectar_sistema(mac)
+        dispositivos.append({'ip': ip, 'mac': mac, 'nombre': nombre, 'so': sistema})
+
+    if dispositivos:
+        print(f"\n{G}[✔] Dispositivos encontrados:{W}\n")
+        print(f"{B}{'IP':<17} {'MAC':<20} {'NOMBRE':<30} {'SISTEMA':<10}{W}")
+        print("-" * 80)
+        for d in dispositivos:
+            print(f"{d['ip']:<17} {d['mac']:<20} {d['nombre']:<30} {d['so']:<10}")
+    else:
+        print(f"{R}[!] No se encontraron dispositivos.{W}")
+
+    return dispositivos
+
+# Función para detectar sistema operativo aproximado por MAC
+def detectar_sistema(mac):
+    if mac.startswith("00:1A:79") or mac.startswith("F4:5C:89"):
         return "Windows"
-    elif "mac" in nombre_lower or "apple" in nombre_lower:
-        return "macOS/iOS"
-    elif "iphone" in nombre_lower or "ios" in nombre_lower:
+    elif mac.startswith("D4:F4:6F") or mac.startswith("28:37:37"):
+        return "Android"
+    elif mac.startswith("3C:07:54") or mac.startswith("F0:18:98"):
+        return "Mac"
+    elif mac.startswith("7C:D1:C3") or mac.startswith("AC:29:3A"):
         return "iOS"
     else:
         return "Desconocido"
 
-def escanear_red(subred):
-    print(f"\n[+] Escaneando dispositivos en la red {subred}...\n")
-    request = scapy.ARP(pdst=subred)
-    broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
-    respuesta = scapy.srp(broadcast / request, timeout=2, verbose=False)[0]
+# Escaneo de puertos de un dispositivo
+def escanear_puertos(ip):
+    print(f"\n{C}[+] Escaneando puertos abiertos en {ip}...{W}")
+    puertos_abiertos = []
 
-    dispositivos = []
-    for _, recibido in respuesta:
-        ip_dispositivo = recibido.psrc
-        mac_dispositivo = recibido.hwsrc
-        nombre = obtener_nombre(ip_dispositivo)
-        dispositivos.append({
-            "ip": ip_dispositivo,
-            "nombre": nombre,
-            "mac": mac_dispositivo,
-            "so": detectar_sistema(nombre)
-        })
-
-    return dispositivos
-
-def mostrar_resultados_en_tabla(dispositivos):
-    ventana = tk.Toplevel()
-    ventana.title("Dispositivos en la red")
-    ventana.configure(bg="#1e1e1e")
-    ventana.geometry("720x400")
-
-    style = ttk.Style(ventana)
-    style.theme_use("default")
-    style.configure("Treeview",
-                    background="#2e2e2e",
-                    foreground="white",
-                    rowheight=25,
-                    fieldbackground="#2e2e2e",
-                    font=("Consolas", 10))
-    style.map("Treeview", background=[("selected", "#007acc")])
-
-    titulo = tk.Label(ventana, text="Dispositivos Detectados (IP - MAC - Nombre - Sistema)",
-                      bg="#1e1e1e", fg="#00ffcc", font=("Consolas", 14, "bold"))
-    titulo.pack(pady=10)
-
-    columnas = ("ip", "mac", "nombre", "so")
-    tabla = ttk.Treeview(ventana, columns=columnas, show="headings")
-    for col in columnas:
-        tabla.heading(col, text=col.upper())
-        tabla.column(col, width=160 if col != "nombre" else 240)
-
-    scrollbar = ttk.Scrollbar(ventana, orient="vertical", command=tabla.yview)
-    tabla.configure(yscroll=scrollbar.set)
-    scrollbar.pack(side="right", fill="y")
-    tabla.pack(padx=10, pady=10, fill="both", expand=True)
-
-    for d in dispositivos:
-        tabla.insert("", tk.END, values=(d['ip'], d['mac'], d['nombre'], d['so']))
-
-    def guardar():
-        if not dispositivos:
-            messagebox.showinfo("Guardar", "No hay datos para guardar.")
-            return
-        guardar_archivo = messagebox.askyesno("Guardar", "¿Deseas guardar los resultados en un archivo?")
-        if guardar_archivo:
-            archivo = filedialog.asksaveasfilename(
-                defaultextension=".csv",
-                filetypes=[("CSV", "*.csv"), ("Texto", "*.txt")]
-            )
-            if archivo:
-                with open(archivo, "w") as f:
-                    f.write("IP,MAC,Nombre,Sistema\n")
-                    for d in dispositivos:
-                        f.write(f"{d['ip']},{d['mac']},{d['nombre']},{d['so']}\n")
-                messagebox.showinfo("Guardado", f"Datos guardados en:\n{archivo}")
-
-    boton_guardar = tk.Button(ventana, text="Guardar resultados", command=guardar,
-                              bg="#007acc", fg="white", font=("Consolas", 11, "bold"))
-    boton_guardar.pack(pady=10)
-
-    ventana.mainloop()
-
-def obtener_velocidad_gui():
-    ventana = tk.Tk()
-    ventana.title("Seleccionar velocidad de escaneo")
-    ventana.geometry("300x180")
-    ventana.configure(bg="#1e1e1e")
-
-    var = tk.StringVar(value="0.5")
-
-    opciones = {
-        "1 - Lento (2 seg)": 2,
-        "2 - Rápido (0.5 seg)": 0.5,
-        "3 - Súper rápido (0.1 seg)": 0.1,
-        "4 - Ultra rápido (0.01 seg)": 0.01,
-    }
-
-    def seleccionar():
-        ventana.destroy()
-
-    tk.Label(ventana, text="Seleccione la velocidad de escaneo:", fg="#00ffcc",
-             bg="#1e1e1e", font=("Consolas", 11)).pack(pady=10)
-
-    for texto, val in opciones.items():
-        rb = tk.Radiobutton(ventana, text=texto, variable=var, value=str(val),
-                            fg="white", bg="#1e1e1e", selectcolor="#007acc", font=("Consolas", 10))
-        rb.pack(anchor="w", padx=20)
-
-    tk.Button(ventana, text="Confirmar", command=seleccionar,
-              bg="#007acc", fg="white", font=("Consolas", 11, "bold")).pack(pady=10)
-
-    ventana.mainloop()
-
-    return float(var.get())
-
-def escanear_puertos(ip, nombre, mostrar_en_ventana=True):
-    timeout = obtener_velocidad_gui()
-    resultados = []
-
-    def escanear_puerto(puerto):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        resultado = sock.connect_ex((ip, puerto))
-        if resultado == 0:
-            resultados.append(puerto)
+    def scan_port(port):
+        sock = socket.socket()
+        sock.settimeout(0.5)
+        try:
+            sock.connect((ip, port))
+            puertos_abiertos.append(port)
+        except:
+            pass
         sock.close()
 
     hilos = []
-    for puerto in range(1, 1025):  # Puedes cambiar a 65536 si quieres más puertos
-        hilo = threading.Thread(target=escanear_puerto, args=(puerto,))
-        hilos.append(hilo)
-        hilo.start()
+    for puerto in range(1, 1025):
+        t = threading.Thread(target=scan_port, args=(puerto,))
+        hilos.append(t)
+        t.start()
 
-    for hilo in hilos:
-        hilo.join()
+    for t in hilos:
+        t.join()
 
-    if mostrar_en_ventana:
-        ventana = tk.Toplevel()
-        ventana.title(f"Puertos abiertos en {ip} ({nombre})")
-        ventana.geometry("400x300")
-        ventana.configure(bg="#1e1e1e")
-
-        texto_scroll = scrolledtext.ScrolledText(ventana, width=50, height=15,
-                                                 bg="#2e2e2e", fg="#dcdcdc", font=("Consolas", 11))
-        texto_scroll.pack(padx=10, pady=10)
-
-        if resultados:
-            for puerto in sorted(resultados):
-                texto_scroll.insert(tk.END, f"Puerto {puerto} ABIERTO\n")
-        else:
-            texto_scroll.insert(tk.END, "No se encontraron puertos abiertos.\n")
-
-        texto_scroll.config(state=tk.DISABLED)
-
-        def guardar():
-            if not resultados:
-                messagebox.showinfo("Guardar", "No hay datos para guardar.")
-                return
-            guardar_archivo = messagebox.askyesno("Guardar", "¿Deseas guardar los resultados en un archivo?")
-            if guardar_archivo:
-                archivo = filedialog.asksaveasfilename(
-                    defaultextension=".txt",
-                    filetypes=[("Texto", "*.txt"), ("CSV", "*.csv")]
-                )
-                if archivo:
-                    with open(archivo, "w") as f:
-                        for puerto in sorted(resultados):
-                            f.write(f"Puerto {puerto} ABIERTO\n")
-                    messagebox.showinfo("Guardado", f"Datos guardados en:\n{archivo}")
-
-        boton_guardar = tk.Button(ventana, text="Guardar resultados", command=guardar,
-                                  bg="#007acc", fg="white", font=("Consolas", 11, "bold"))
-        boton_guardar.pack(pady=10)
-
-        ventana.mainloop()
-
+    if puertos_abiertos:
+        print(f"{G}[✔] Puertos abiertos en {ip}:{W} {puertos_abiertos}")
     else:
-        for puerto in sorted(resultados):
-            print(f"Puerto {puerto} ABIERTO")
+        print(f"{R}[!] No se encontraron puertos abiertos en {ip}.{W}")
 
-def ventana_menu():
-    ip_local = obtener_ip_local()
-    if not ip_local:
-        messagebox.showerror("Error", "No se pudo determinar la IP local. Asegúrate de estar conectado a una red.")
-        return
-    subred = ip_a_subred(ip_local)
+# Desautenticación simulada (educativo)
+def ataque_desautenticacion(ip, mac):
+    print(f"{Y}[!] Función educativa: desautenticando {ip} ({mac})...{W}")
+    print(f"{R}[!] Esto requeriría modo monitor y permisos root (uso real con aireplay-ng).{W}")
+    time.sleep(2)
+    print(f"{G}[✔] Simulación completada.{W}")
 
-    dispositivos = []
-
-    root = tk.Tk()
-    root.title("MR.Pato Scanner v1.5")
-    root.geometry("600x400")
-    root.configure(bg="#1e1e1e")
-
-    titulo = tk.Label(root, text="MR.Pato Scanner v1.5", font=("Consolas", 20, "bold"),
-                      fg="#00ffcc", bg="#1e1e1e")
-    titulo.pack(pady=20)
-
-    info_subred = tk.Label(root, text=f"Red detectada: {subred}", font=("Consolas", 12),
-                           fg="white", bg="#1e1e1e")
-    info_subred.pack(pady=5)
-
-    def boton_escaneo_red():
-        nonlocal dispositivos
-        dispositivos = escanear_red(subred)
-        if dispositivos:
-            mostrar_resultados_en_tabla(dispositivos)
-        else:
-            messagebox.showinfo("Sin resultados", "No se encontraron dispositivos en la red.")
-
-    def boton_escaneo_puertos_todos():
-        if not dispositivos:
-            messagebox.showwarning("Atención", "Primero escanee la red para detectar dispositivos.")
-            return
+# Guardar resultados en archivo
+def guardar(dispositivos):
+    nombre = f"resultado_escaneo.txt"
+    with open(nombre, "w") as f:
+        f.write("IP\tMAC\tNOMBRE\tSO\n")
         for d in dispositivos:
-            escanear_puertos(d["ip"], d["nombre"])
+            f.write(f"{d['ip']}\t{d['mac']}\t{d['nombre']}\t{d['so']}\n")
+    print(f"{G}[✔] Resultados guardados en {nombre}{W}")
 
-    def boton_escaneo_puertos_ip():
-        ip_obj = simpledialog.askstring("Escanear IP", "Ingrese la IP que desea escanear:")
-        if not ip_obj:
-            return
-        nombre_obj = obtener_nombre(ip_obj)
-        escanear_puertos(ip_obj, nombre_obj)
+# Menú principal
+def menu():
+    while True:
+        os.system("clear" if os.name != "nt" else "cls")
+        print(f"""{B}
+╔════════════════════════════════════════════╗
+║     ESCÁNER DE RED LOCAL - ETHICAL USE     ║
+╠════════════════════════════════════════════╣
+║ 1. Escanear dispositivos en la red         ║
+║ 2. Escanear puertos de un dispositivo      ║
+║ 3. Simular desautenticación (educativo)    ║
+║ 4. Salir                                   ║
+╚════════════════════════════════════════════╝{W}""")
+        opcion = input(f"{C}Seleccione una opción: {W}")
 
-    def salir():
-        root.destroy()
+        if opcion == "1":
+            red = obtener_red_local()
+            dispositivos = escanear_dispositivos(red)
+            if dispositivos:
+                guardar_op = input(f"{Y}¿Deseas guardar los resultados? (s/n): {W}")
+                if guardar_op.lower() == "s":
+                    guardar(dispositivos)
+            input(f"\n{C}Presiona Enter para continuar...{W}")
 
-    btn1 = tk.Button(root, text="1. Escanear dispositivos en la red detectada", font=("Consolas", 12),
-                     bg="#007acc", fg="white", command=boton_escaneo_red)
-    btn1.pack(pady=10, fill="x", padx=50)
+        elif opcion == "2":
+            ip = input(f"{Y}Ingrese la IP del dispositivo a escanear puertos: {W}")
+            escanear_puertos(ip)
+            input(f"\n{C}Presiona Enter para continuar...{W}")
 
-    btn2 = tk.Button(root, text="2. Escanear puertos abiertos en dispositivos detectados", font=("Consolas", 12),
-                     bg="#007acc", fg="white", command=boton_escaneo_puertos_todos)
-    btn2.pack(pady=10, fill="x", padx=50)
+        elif opcion == "3":
+            ip = input(f"{Y}Ingrese IP del dispositivo a simular desautenticación: {W}")
+            mac = input(f"{Y}Ingrese MAC del dispositivo: {W}")
+            ataque_desautenticacion(ip, mac)
+            input(f"\n{C}Presiona Enter para continuar...{W}")
 
-    btn3 = tk.Button(root, text="3. Escanear puertos en una IP específica", font=("Consolas", 12),
-                     bg="#007acc", fg="white", command=boton_escaneo_puertos_ip)
-    btn3.pack(pady=10, fill="x", padx=50)
+        elif opcion == "4":
+            print(f"{G}Saliendo...{W}")
+            break
 
-    btn4 = tk.Button(root, text="4. Salir", font=("Consolas", 12),
-                     bg="#007acc", fg="white", command=salir)
-    btn4.pack(pady=10, fill="x", padx=50)
+        else:
+            print(f"{R}Opción inválida.{W}")
+            time.sleep(1)
 
-    root.mainloop()
-
+# Ejecutar
 if __name__ == "__main__":
-    ventana_menu()
+    try:
+        menu()
+    except KeyboardInterrupt:
+        print(f"\n{R}Interrumpido por el usuario. Cerrando...{W}")
