@@ -1,191 +1,174 @@
-import os
-import socket
-import platform
-from scapy.all import ARP, Ether, srp
-import threading
-from queue import Queue
-import tkinter as tk
-from tkinter import ttk, simpledialog, messagebox
-from colorama import Fore, Style, init
-import time
+# DEVIL-EYES - Escáner de Red y Puertos con Interfaz Avanzada
 
+import tkinter as tk
+from tkinter import messagebox, ttk
+from scapy.all import ARP, Ether, srp
+import socket
+import threading
+import platform
+from queue import Queue
+from colorama import Fore, init
 init(autoreset=True)
 
-# --- Escaneo de dispositivos en red ---
+# Colores personalizados para fondo oscuro
+FONDO = '#121212'
+TEXTO = '#E0E0E0'
+VERDE = '#00FF00'
+ROJO = '#FF5555'
 
-def obtener_dispositivos(red):
-    dispositivos = []
-    paquete_arp = ARP(pdst=red)
-    paquete_ether = Ether(dst="ff:ff:ff:ff:ff:ff")
-    paquete = paquete_ether / paquete_arp
+# Configuración de ventana principal
+class DevilEyesApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("DEVIL-EYES")
+        self.root.configure(bg=FONDO)
+        self.root.geometry("800x600")
 
-    resultado = srp(paquete, timeout=3, verbose=0)[0]
+        self.resultados_escaneo = []
+        self.resultados_puertos = []
 
-    for envio, recibido in resultado:
-        ip = recibido.psrc
-        mac = recibido.hwsrc
-        try:
-            nombre = socket.gethostbyaddr(ip)[0]
-        except:
-            nombre = "Desconocido"
+        ttk.Style().theme_use('clam')
+        style = ttk.Style()
+        style.configure("Treeview", background=FONDO, foreground=TEXTO, fieldbackground=FONDO)
+        style.configure("Treeview.Heading", background=FONDO, foreground='white')
 
-        try:
+        self.crear_widgets()
+
+    def crear_widgets(self):
+        frame = tk.Frame(self.root, bg=FONDO)
+        frame.pack(pady=20)
+
+        btn_escanear_red = tk.Button(frame, text="Escanear Dispositivos", command=self.escanear_red, bg='#1E88E5', fg='white')
+        btn_escanear_red.grid(row=0, column=0, padx=10)
+
+        btn_escanear_puertos = tk.Button(frame, text="Escanear Puertos", command=self.pedir_ip_y_rango, bg='#43A047', fg='white')
+        btn_escanear_puertos.grid(row=0, column=1, padx=10)
+
+        btn_ver_abiertos = tk.Button(frame, text="Ver solo Puertos Abiertos", command=self.ver_puertos_abiertos, bg='#FB8C00', fg='white')
+        btn_ver_abiertos.grid(row=0, column=2, padx=10)
+
+        self.tree = ttk.Treeview(self.root, columns=("IP", "MAC", "Nombre", "SO"), show="headings")
+        self.tree.heading("IP", text="IP")
+        self.tree.heading("MAC", text="MAC")
+        self.tree.heading("Nombre", text="Nombre")
+        self.tree.heading("SO", text="Sistema Operativo")
+        self.tree.pack(pady=10, fill=tk.BOTH, expand=True)
+
+        self.text_result = tk.Text(self.root, bg=FONDO, fg=TEXTO)
+        self.text_result.pack(pady=10, fill=tk.BOTH, expand=True)
+
+    def escanear_red(self):
+        self.tree.delete(*self.tree.get_children())
+        ip_local = self.obtener_ip_local()
+        ip_red = '.'.join(ip_local.split('.')[:-1]) + '.1/24'
+        pkt = Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip_red)
+        res, _ = srp(pkt, timeout=2, verbose=0)
+
+        self.resultados_escaneo.clear()
+
+        for _, rcv in res:
+            ip = rcv.psrc
+            mac = rcv.hwsrc
+            try:
+                nombre = socket.gethostbyaddr(ip)[0]
+            except:
+                nombre = "Desconocido"
             so = platform.system()
-        except:
-            so = "Desconocido"
+            self.tree.insert("", "end", values=(ip, mac, nombre, so))
+            self.resultados_escaneo.append((ip, mac, nombre, so))
 
-        dispositivos.append((ip, mac, nombre, so))
-    return dispositivos
+        if messagebox.askyesno("Guardar", "¿Deseas guardar los resultados del escaneo de red?"):
+            with open("dispositivos_red.txt", "w") as f:
+                for d in self.resultados_escaneo:
+                    f.write(f"{d[0]}\t{d[1]}\t{d[2]}\t{d[3]}\n")
 
-def mostrar_ventana_dispositivos(dispositivos):
-    ventana = tk.Tk()
-    ventana.title("DEVIL-EYES - Dispositivos en Red")
-    ventana.configure(bg="#121212")
-    ventana.geometry("900x400")
-
-    style = ttk.Style(ventana)
-    style.theme_use("clam")
-    style.configure("Treeview", 
-                    background="#1e1e1e", 
-                    foreground="white", 
-                    fieldbackground="#1e1e1e", 
-                    rowheight=25)
-    style.configure("Treeview.Heading", font=("Arial", 10, "bold"))
-
-    tabla = ttk.Treeview(ventana, columns=("IP", "MAC", "Nombre", "SO"), show="headings")
-    tabla.heading("IP", text="IP")
-    tabla.heading("MAC", text="MAC")
-    tabla.heading("Nombre", text="Nombre")
-    tabla.heading("SO", text="Sistema Operativo")
-
-    for dispositivo in dispositivos:
-        tabla.insert("", "end", values=dispositivo)
-
-    tabla.pack(padx=10, pady=10, fill="both", expand=True)
-
-    scrollbar = ttk.Scrollbar(ventana, orient="vertical", command=tabla.yview)
-    tabla.configure(yscrollcommand=scrollbar.set)
-    scrollbar.pack(side="right", fill="y")
-
-    ventana.mainloop()
-
-# --- Escaneo de puertos multi-hilo ---
-
-def escanear_puerto(ip, puerto, resultados, mostrar_cerrados):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1.0)
-    try:
-        resultado = sock.connect_ex((ip, puerto))
-        if resultado == 0:
-            print(f"{Fore.GREEN}🟢 Puerto {puerto} ABIERTO en {ip}{Style.RESET_ALL}")
-            resultados.append(puerto)
-        else:
-            if mostrar_cerrados:
-                print(f"{Fore.RED}🔴 Puerto {puerto} CERRADO en {ip}{Style.RESET_ALL}")
-    except Exception:
-        pass
-    finally:
-        sock.close()
-
-def worker(ip, queue, resultados, mostrar_cerrados):
-    while not queue.empty():
-        puerto = queue.get()
-        escanear_puerto(ip, puerto, resultados, mostrar_cerrados)
-        queue.task_done()
-
-def escaneo_multihilo(ip, inicio=1, fin=1024, mostrar_cerrados=True, solo_abiertos=False, hilos=100):
-    print(f"\nIniciando escaneo multi-hilo en {ip} puertos {inicio}-{fin}...\n")
-    queue = Queue()
-    resultados = []
-
-    for puerto in range(inicio, fin+1):
-        queue.put(puerto)
-
-    threads = []
-    for _ in range(hilos):
-        t = threading.Thread(target=worker, args=(ip, queue, resultados, mostrar_cerrados))
-        t.daemon = True
-        t.start()
-        threads.append(t)
-
-    queue.join()
-
-    print("\nEscaneo finalizado.\n")
-
-    if resultados:
-        guardar = input("¿Deseas guardar los puertos abiertos en un archivo? (s/n): ").lower()
-        if guardar == "s":
-            archivo = f"puertos_abiertos_{ip.replace('.', '_')}.txt"
-            with open(archivo, "w") as f:
-                for puerto in resultados:
-                    f.write(f"Puerto {puerto} ABIERTO en {ip}\n")
-            print(f"{Fore.YELLOW}✅ Puertos abiertos guardados en {archivo}{Style.RESET_ALL}")
-    else:
-        print("No se encontraron puertos abiertos.")
-
-# --- Obtener IP local para red ---
-
-def obtener_ip_local():
-    try:
+    def obtener_ip_local(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        except:
+            ip = "127.0.0.1"
+        finally:
+            s.close()
         return ip
-    except:
-        return None
 
-# --- Menú principal ---
+    def pedir_ip_y_rango(self):
+        def iniciar():
+            ip = entry_ip.get()
+            rango = entry_rango.get()
+            try:
+                p1, p2 = map(int, rango.split('-'))
+                if p1 < 1 or p2 > 65535 or p1 >= p2:
+                    raise ValueError
+                ventana.destroy()
+                self.text_result.delete(1.0, tk.END)
+                threading.Thread(target=self.escanear_puertos, args=(ip, p1, p2)).start()
+            except:
+                messagebox.showerror("Error", "Rango inválido. Ej: 20-100")
 
-def menu():
-    while True:
-        print(f"""
-{Fore.RED}██████╗ ███████╗██╗   ██╗██╗██╗     
-██╔══██╗██╔════╝██║   ██║██║██║     
-██║  ██║█████╗  ██║   ██║██║██║     
-██║  ██║██╔══╝  ╚██╗ ██╔╝██║██║     
-██████╔╝███████╗ ╚████╔╝ ██║███████╗
-╚═════╝ ╚══════╝  ╚═══╝  ╚═╝╚══════╝
-{Style.RESET_ALL}
-{Fore.CYAN}[1]{Style.RESET_ALL} Escanear dispositivos conectados
-{Fore.CYAN}[2]{Style.RESET_ALL} Escanear todos los puertos de una IP
-{Fore.CYAN}[3]{Style.RESET_ALL} Ver únicamente puertos abiertos
-{Fore.CYAN}[4]{Style.RESET_ALL} Salir
-""")
+        ventana = tk.Toplevel(self.root)
+        ventana.title("Escaneo de Puertos")
+        ventana.configure(bg=FONDO)
 
-        opcion = input("Selecciona una opción: ")
+        tk.Label(ventana, text="IP del dispositivo:", bg=FONDO, fg=TEXTO).pack()
+        entry_ip = tk.Entry(ventana)
+        entry_ip.pack()
 
-        if opcion == "1":
-            ip_local = obtener_ip_local()
-            if ip_local:
-                red = ip_local.rsplit('.', 1)[0] + ".1/24"
-                print(f"Escaneando red: {red} ...")
-                dispositivos = obtener_dispositivos(red)
-                mostrar_ventana_dispositivos(dispositivos)
-                guardar = input("¿Deseas guardar los dispositivos encontrados en un archivo? (s/n): ").lower()
-                if guardar == "s":
-                    with open("dispositivos.txt", "w") as f:
-                        for d in dispositivos:
-                            f.write(f"{d[0]}\t{d[1]}\t{d[2]}\t{d[3]}\n")
-                    print(f"{Fore.YELLOW}✅ Resultados guardados en dispositivos.txt")
-            else:
-                print("No se pudo obtener la IP local.")
+        tk.Label(ventana, text="Rango de puertos (Ej: 20-100):", bg=FONDO, fg=TEXTO).pack()
+        entry_rango = tk.Entry(ventana)
+        entry_rango.pack()
 
-        elif opcion == "2":
-            ip = input("Ingresa la IP a escanear: ")
-            escaneo_multihilo(ip, 1, 1024, mostrar_cerrados=True, solo_abiertos=False)
+        tk.Button(ventana, text="Iniciar", command=iniciar, bg='#1E88E5', fg='white').pack(pady=10)
 
-        elif opcion == "3":
-            ip = input("Ingresa la IP a escanear: ")
-            escaneo_multihilo(ip, 1, 1024, mostrar_cerrados=False, solo_abiertos=True)
+    def escanear_puertos(self, ip, start_port, end_port):
+        def scan_port(q):
+            while not q.empty():
+                port = q.get()
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.5)
+                result = sock.connect_ex((ip, port))
+                color = VERDE if result == 0 else ROJO
+                estado = "ABIERTO" if result == 0 else "CERRADO"
+                self.text_result.insert(tk.END, f"Puerto {port}: {estado}\n", ("verde" if result == 0 else "rojo"))
+                if result == 0:
+                    self.resultados_puertos.append((ip, port))
+                sock.close()
+                q.task_done()
 
-        elif opcion == "4":
-            print("¡Hasta luego!")
-            break
+        self.resultados_puertos.clear()
+        self.text_result.tag_config("verde", foreground=VERDE)
+        self.text_result.tag_config("rojo", foreground=ROJO)
+        self.text_result.insert(tk.END, f"Escaneando {ip} de puerto {start_port} a {end_port}...\n")
 
+        q = Queue()
+        for p in range(start_port, end_port + 1):
+            q.put(p)
+
+        hilos = []
+        for _ in range(100):
+            t = threading.Thread(target=scan_port, args=(q,))
+            t.start()
+            hilos.append(t)
+
+        q.join()
+
+        if messagebox.askyesno("Guardar", "¿Deseas guardar los resultados del escaneo de puertos?"):
+            with open("puertos_abiertos.txt", "w") as f:
+                for res in self.resultados_puertos:
+                    f.write(f"{res[0]}:{res[1]}\n")
+
+    def ver_puertos_abiertos(self):
+        self.text_result.delete(1.0, tk.END)
+        if not self.resultados_puertos:
+            self.text_result.insert(tk.END, "No hay puertos abiertos registrados aún.\n")
         else:
-            print("Opción no válida.")
+            self.text_result.insert(tk.END, "Puertos abiertos detectados:\n", "verde")
+            for res in self.resultados_puertos:
+                self.text_result.insert(tk.END, f"{res[0]}:{res[1]}\n", "verde")
+
 
 if __name__ == "__main__":
-    os.system("cls" if os.name == "nt" else "clear")
-    menu()
+    root = tk.Tk()
+    app = DevilEyesApp(root)
+    root.mainloop()
