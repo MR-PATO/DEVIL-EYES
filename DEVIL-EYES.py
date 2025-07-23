@@ -3,12 +3,15 @@ import socket
 import platform
 from scapy.all import ARP, Ether, srp
 import threading
+from queue import Queue
 import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox
 from colorama import Fore, Style, init
 import time
 
 init(autoreset=True)
+
+# --- Escaneo de dispositivos en red ---
 
 def obtener_dispositivos(red):
     dispositivos = []
@@ -36,8 +39,9 @@ def obtener_dispositivos(red):
 
 def mostrar_ventana_dispositivos(dispositivos):
     ventana = tk.Tk()
-    ventana.title("DEVIL-EYES")
+    ventana.title("DEVIL-EYES - Dispositivos en Red")
     ventana.configure(bg="#121212")
+    ventana.geometry("900x400")
 
     style = ttk.Style(ventana)
     style.theme_use("clam")
@@ -57,7 +61,7 @@ def mostrar_ventana_dispositivos(dispositivos):
     for dispositivo in dispositivos:
         tabla.insert("", "end", values=dispositivo)
 
-    tabla.pack(padx=10, pady=10)
+    tabla.pack(padx=10, pady=10, fill="both", expand=True)
 
     scrollbar = ttk.Scrollbar(ventana, orient="vertical", command=tabla.yview)
     tabla.configure(yscrollcommand=scrollbar.set)
@@ -65,48 +69,73 @@ def mostrar_ventana_dispositivos(dispositivos):
 
     ventana.mainloop()
 
+# --- Escaneo de puertos multi-hilo ---
+
 def escanear_puerto(ip, puerto, resultados, mostrar_cerrados):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(1.0)
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.5)
         resultado = sock.connect_ex((ip, puerto))
         if resultado == 0:
-            print(f"{Fore.GREEN}🟢 Puerto {puerto} ABIERTO en {ip}")
+            print(f"{Fore.GREEN}🟢 Puerto {puerto} ABIERTO en {ip}{Style.RESET_ALL}")
             resultados.append(puerto)
         else:
             if mostrar_cerrados:
-                print(f"{Fore.RED}🔴 Puerto {puerto} CERRADO en {ip}")
-        sock.close()
-    except Exception as e:
+                print(f"{Fore.RED}🔴 Puerto {puerto} CERRADO en {ip}{Style.RESET_ALL}")
+    except Exception:
         pass
+    finally:
+        sock.close()
 
-def escaneo_con_animacion(ip, mostrar_cerrados=True, solo_abiertos=False):
-    print(f"\nEscaneando puertos en {ip}...")
-    animar = True
-
-    def animacion():
-        while animar:
-            for c in "|/-\\":
-                print(f"\rEscaneando... {c}", end="", flush=True)
-                time.sleep(0.1)
-
-    hilo_anim = threading.Thread(target=animacion)
-    hilo_anim.start()
-
-    resultados = []
-    for puerto in range(1, 1025):
+def worker(ip, queue, resultados, mostrar_cerrados):
+    while not queue.empty():
+        puerto = queue.get()
         escanear_puerto(ip, puerto, resultados, mostrar_cerrados)
+        queue.task_done()
 
-    animar = False
-    hilo_anim.join()
-    print("\n")
+def escaneo_multihilo(ip, inicio=1, fin=1024, mostrar_cerrados=True, solo_abiertos=False, hilos=100):
+    print(f"\nIniciando escaneo multi-hilo en {ip} puertos {inicio}-{fin}...\n")
+    queue = Queue()
+    resultados = []
 
-    if solo_abiertos and resultados:
-        with open(f"puertos_abiertos_{ip}.txt", "w") as f:
-            for puerto in resultados:
-                f.write(f"Puerto {puerto} ABIERTO en {ip}\n")
-        print(f"{Fore.YELLOW}✅ Puertos abiertos guardados en puertos_abiertos_{ip}.txt")
-    return resultados
+    for puerto in range(inicio, fin+1):
+        queue.put(puerto)
+
+    threads = []
+    for _ in range(hilos):
+        t = threading.Thread(target=worker, args=(ip, queue, resultados, mostrar_cerrados))
+        t.daemon = True
+        t.start()
+        threads.append(t)
+
+    queue.join()
+
+    print("\nEscaneo finalizado.\n")
+
+    if resultados:
+        guardar = input("¿Deseas guardar los puertos abiertos en un archivo? (s/n): ").lower()
+        if guardar == "s":
+            archivo = f"puertos_abiertos_{ip.replace('.', '_')}.txt"
+            with open(archivo, "w") as f:
+                for puerto in resultados:
+                    f.write(f"Puerto {puerto} ABIERTO en {ip}\n")
+            print(f"{Fore.YELLOW}✅ Puertos abiertos guardados en {archivo}{Style.RESET_ALL}")
+    else:
+        print("No se encontraron puertos abiertos.")
+
+# --- Obtener IP local para red ---
+
+def obtener_ip_local():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return None
+
+# --- Menú principal ---
 
 def menu():
     while True:
@@ -127,25 +156,28 @@ def menu():
         opcion = input("Selecciona una opción: ")
 
         if opcion == "1":
-            red_local = obtener_ip_local()
-            if red_local:
-                red = red_local.rsplit('.', 1)[0] + ".1/24"
+            ip_local = obtener_ip_local()
+            if ip_local:
+                red = ip_local.rsplit('.', 1)[0] + ".1/24"
+                print(f"Escaneando red: {red} ...")
                 dispositivos = obtener_dispositivos(red)
                 mostrar_ventana_dispositivos(dispositivos)
-                with open("dispositivos.txt", "w") as f:
-                    for d in dispositivos:
-                        f.write(f"{d[0]}\t{d[1]}\t{d[2]}\t{d[3]}\n")
-                print(f"{Fore.YELLOW}✅ Resultados guardados en dispositivos.txt")
+                guardar = input("¿Deseas guardar los dispositivos encontrados en un archivo? (s/n): ").lower()
+                if guardar == "s":
+                    with open("dispositivos.txt", "w") as f:
+                        for d in dispositivos:
+                            f.write(f"{d[0]}\t{d[1]}\t{d[2]}\t{d[3]}\n")
+                    print(f"{Fore.YELLOW}✅ Resultados guardados en dispositivos.txt")
             else:
                 print("No se pudo obtener la IP local.")
 
         elif opcion == "2":
             ip = input("Ingresa la IP a escanear: ")
-            escaneo_con_animacion(ip, mostrar_cerrados=True)
+            escaneo_multihilo(ip, 1, 1024, mostrar_cerrados=True, solo_abiertos=False)
 
         elif opcion == "3":
             ip = input("Ingresa la IP a escanear: ")
-            escaneo_con_animacion(ip, mostrar_cerrados=False, solo_abiertos=True)
+            escaneo_multihilo(ip, 1, 1024, mostrar_cerrados=False, solo_abiertos=True)
 
         elif opcion == "4":
             print("¡Hasta luego!")
@@ -153,16 +185,6 @@ def menu():
 
         else:
             print("Opción no válida.")
-
-def obtener_ip_local():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except:
-        return None
 
 if __name__ == "__main__":
     os.system("cls" if os.name == "nt" else "clear")
